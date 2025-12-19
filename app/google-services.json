@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "12977736854",
+    "project_id": "savetransactionapp",
+    "storage_bucket": "savetransactionapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:12977736854:android:067e5166b815867e2806b7",
+        "android_client_info": {
+          "package_name": "com.example.savetransactionapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBNshh_nq3FZMVvSmUmuT9cB-_6XW6jIz8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
