@@ -40,7 +40,7 @@ Aplikasi ini dibangun menggunakan teknologi modern Android Development:
 
 | Dashboard Utama | Mode Scan Kamera | Hasil Scan (AI) | Detail Transaksi |
 |:---:|:---:|:---:|:---:|
-| <img src="screenshots/dashboard.jpg" width="200" /> | <img src="screenshots/scan.jpg" width="200" /> | <img src="screenshots/form.jpg" width="200" /> | <img src="screenshots/detail.jpg" width="200" /> |
+| <img src="Screenshot/dashboard.png" width="200" /> | <img src="Screenshot/camera.png" width="200" /> | <img src="Screenshot/input-AI.png" width="200" /> | <img src="Screenshot/details.png" width="200" /> |
 
 *(Catatan: Ganti `screenshots/nama_file.jpg` dengan lokasi foto aplikasi kamu)*
 
