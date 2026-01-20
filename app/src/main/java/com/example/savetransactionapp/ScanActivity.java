@@ -1,75 +1,139 @@
 package com.example.savetransactionapp;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
+import android.app.DatePickerDialog;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.transition.TransitionManager;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageCapture;
+import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
+import androidx.cardview.widget.CardView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.camera.core.ImageCapture;
-import androidx.camera.core.ImageCaptureException;
-import androidx.camera.core.ImageProxy;
+
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Locale;
+import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import android.widget.Button;
-import android.widget.EditText;
-import android.media.Image;
 
-import com.google.common.util.concurrent.ListenableFuture;
-
-import java.util.concurrent.ExecutionException;
-
+@androidx.camera.core.ExperimentalGetImage
 public class ScanActivity extends AppCompatActivity {
 
     private static final int REQUEST_CODE_PERMISSIONS = 10;
     private static final String[] REQUIRED_PERMISSIONS = new String[]{Manifest.permission.CAMERA};
 
+    // UI Components
+    private ViewGroup rootLayout;
     private PreviewView viewFinder;
+    private ImageView imgPreview;
+    private com.google.android.material.floatingactionbutton.FloatingActionButton btnCapture;
+    private com.google.android.material.floatingactionbutton.FloatingActionButton btnGallery;
+    private ProgressBar loadingProgress;
+    private CardView containerForm;
+    private Button btnRetake;
+    private Button btnSave;
+
+    // Animation Components
+    private ViewGroup overlaySaveAnim;
+    private View animCircleExpand;
+    private ProgressBar animLoadingSave;
+    private TextView animTextSuccess;
+
+    // Inputs
+    private EditText etNotes;
+    private EditText etAmount;
+    private EditText etDate;
+
+    // Logic Variables
+    private java.io.File photoFile;
     private ImageCapture imageCapture;
-    private Button btnCapture;
-    private Button btnGallery;
-    private EditText etStoreName; // Untuk Nama Toko
-    private EditText etAmount;   // Untuk Harga
-    private EditText etDate;     // Untuk Tanggal
+    private ActivityResultLauncher<String> galleryLauncher;
 
-
+    @SuppressLint("MissingInflatedId")
     @Override
-    @androidx.camera.core.ExperimentalGetImage
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_scan);
 
+        // Initialize UI Components
+        rootLayout = findViewById(R.id.root_layout);
         viewFinder = findViewById(R.id.viewFinder);
-
+        imgPreview = findViewById(R.id.img_preview);
         btnCapture = findViewById(R.id.btn_capture);
-
-
         btnGallery = findViewById(R.id.btn_gallery);
+        loadingProgress = findViewById(R.id.loading_progress);
+        containerForm = findViewById(R.id.container_form);
 
-        btnCapture.setOnClickListener(v -> {
-            captureAndAnalyze();
-        });
-
-
-        btnGallery.setOnClickListener(v -> {
-            Toast.makeText(this, "Fitur Galeri belum dibuat", Toast.LENGTH_SHORT).show();
-        });
-
-        etStoreName = findViewById(R.id.et_store_name);
+        etNotes = findViewById(R.id.et_notes);
         etAmount = findViewById(R.id.et_amount);
         etDate = findViewById(R.id.et_date);
-        // Cek Izin Kamera saat Activity dibuka
+
+        btnRetake = findViewById(R.id.btn_retake);
+        btnSave = findViewById(R.id.btn_save);
+
+        // Initialize Animation Components
+        overlaySaveAnim = findViewById(R.id.overlay_save_anim);
+        animCircleExpand = findViewById(R.id.anim_circle_expand);
+        animLoadingSave = findViewById(R.id.anim_loading_save);
+        animTextSuccess = findViewById(R.id.anim_text_success);
+
+        // Setup Gallery Launcher
+        galleryLauncher = registerForActivityResult(
+                new ActivityResultContracts.GetContent(),
+                uri -> {
+                    if (uri != null) {
+                        processGalleryImage(uri);
+                    }
+                }
+        );
+
+        // Set Click Listeners
+        btnCapture.setOnClickListener(v -> captureAndAnalyze());
+        btnGallery.setOnClickListener(v -> galleryLauncher.launch("image/*"));
+        btnRetake.setOnClickListener(v -> resetCamera());
+        btnSave.setOnClickListener(v -> saveTransactionToCloud());
+
+        imgPreview.setOnClickListener(v -> {
+            TransitionManager.beginDelayedTransition(rootLayout);
+            if (containerForm.getVisibility() == View.VISIBLE) {
+                containerForm.setVisibility(View.GONE);
+                Toast.makeText(this, "Ketuk lagi untuk edit", Toast.LENGTH_SHORT).show();
+            } else {
+                containerForm.setVisibility(View.VISIBLE);
+            }
+        });
+
+        setupDatePicker();
+
+        // Check Camera Permissions
         if (allPermissionsGranted()) {
             startCamera();
         } else {
@@ -77,161 +141,253 @@ public class ScanActivity extends AppCompatActivity {
         }
     }
 
+    private void captureAndAnalyze() {
+        if (imageCapture == null) return;
+
+        // Update UI for Loading State
+        loadingProgress.setVisibility(View.VISIBLE);
+        btnCapture.setVisibility(View.INVISIBLE);
+        btnGallery.setVisibility(View.INVISIBLE);
+
+        // Prepare File Output
+        java.io.File photoDir = new java.io.File(getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "StrukImages");
+        if (!photoDir.exists()) photoDir.mkdirs();
+
+        String fileName = "STRUK_" + System.currentTimeMillis() + ".jpg";
+        photoFile = new java.io.File(photoDir, fileName);
+
+        ImageCapture.OutputFileOptions outputOptions = new ImageCapture.OutputFileOptions.Builder(photoFile).build();
+
+        // Capture Image
+        imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
+            @Override
+            public void onImageSaved(@NonNull ImageCapture.OutputFileResults outputFileResults) {
+                android.net.Uri savedUri = android.net.Uri.fromFile(photoFile);
+                showResultUI(savedUri);
+            }
+
+            @Override
+            public void onError(@NonNull ImageCaptureException exception) {
+                loadingProgress.setVisibility(View.GONE);
+                btnCapture.setVisibility(View.VISIBLE);
+                btnGallery.setVisibility(View.VISIBLE);
+                Toast.makeText(ScanActivity.this, "Gagal mengambil foto: " + exception.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void processGalleryImage(android.net.Uri imageUri) {
+        try {
+            java.io.InputStream inputStream = getContentResolver().openInputStream(imageUri);
+            java.io.File photoDir = new java.io.File(getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "StrukImages");
+            if (!photoDir.exists()) photoDir.mkdirs();
+
+            java.io.File destFile = new java.io.File(photoDir, "GALERI_" + System.currentTimeMillis() + ".jpg");
+
+            java.io.FileOutputStream out = new java.io.FileOutputStream(destFile);
+            byte[] buffer = new byte[1024];
+            int length;
+            while ((length = inputStream.read(buffer)) > 0) {
+                out.write(buffer, 0, length);
+            }
+            out.close();
+            inputStream.close();
+
+            this.photoFile = destFile;
+            showResultUI(android.net.Uri.fromFile(destFile));
+
+        } catch (Exception e) {
+            Toast.makeText(this, "Gagal memproses gambar: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showResultUI(android.net.Uri uri) {
+        TransitionManager.beginDelayedTransition(rootLayout);
+
+        loadingProgress.setVisibility(View.GONE);
+        btnCapture.setVisibility(View.GONE);
+        btnGallery.setVisibility(View.GONE);
+
+        imgPreview.setVisibility(View.VISIBLE);
+        imgPreview.setImageURI(uri);
+        viewFinder.setVisibility(View.GONE);
+
+        containerForm.setVisibility(View.VISIBLE);
+
+        analyzeSavedImage(uri);
+    }
+
+    private void resetCamera() {
+        TransitionManager.beginDelayedTransition(rootLayout);
+
+        imgPreview.setVisibility(View.GONE);
+        containerForm.setVisibility(View.GONE);
+        viewFinder.setVisibility(View.VISIBLE);
+
+        btnCapture.setVisibility(View.VISIBLE);
+        btnGallery.setVisibility(View.VISIBLE);
+        loadingProgress.setVisibility(View.GONE);
+
+        etAmount.setText("");
+        etDate.setText("");
+        etNotes.setText("");
+    }
+
+    private void playSuccessAnimation() {
+        animLoadingSave.setVisibility(View.GONE);
+
+        animCircleExpand.setVisibility(View.VISIBLE);
+        animCircleExpand.setScaleX(1f);
+        animCircleExpand.setScaleY(1f);
+
+        animCircleExpand.animate()
+                .scaleX(100f)
+                .scaleY(100f)
+                .setDuration(500)
+                .setInterpolator(new android.view.animation.AccelerateInterpolator())
+                .withEndAction(() -> {
+                    animTextSuccess.animate()
+                            .alpha(1f)
+                            .setDuration(300)
+                            .withEndAction(() -> {
+                                new android.os.Handler().postDelayed(() -> {
+                                    finish();
+                                    overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+                                }, 1500);
+                            })
+                            .start();
+                })
+                .start();
+    }
+
+    private void saveTransactionToCloud() {
+        String notes = etNotes.getText().toString().trim();
+        String amountStr = etAmount.getText().toString().trim();
+        String date = etDate.getText().toString().trim();
+
+        if (amountStr.isEmpty() || date.isEmpty()) {
+            Toast.makeText(this, "Mohon lengkapi Harga dan Tanggal!", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (notes.isEmpty()) notes = "Tanpa Catatan";
+
+        if (photoFile == null || !photoFile.exists()) {
+            Toast.makeText(this, "Foto belum ada!", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        double amount = 0;
+        try {
+            amount = Double.parseDouble(amountStr);
+        } catch (NumberFormatException e) { return; }
+
+        // Start Loading Animation
+        overlaySaveAnim.setVisibility(View.VISIBLE);
+        animLoadingSave.setVisibility(View.VISIBLE);
+        animCircleExpand.setVisibility(View.INVISIBLE);
+        animTextSuccess.setAlpha(0f);
+
+        String imagePath = photoFile.getAbsolutePath();
+
+        // FIXED: Parameter order matched with TransactionModel constructor
+        TransactionModel newTransaction = new TransactionModel(amount, date, imagePath, notes);
+
+        FirebaseFirestore db = FirebaseFirestore.getInstance();
+        db.collection("transactions")
+                .add(newTransaction)
+                .addOnSuccessListener(documentReference -> {
+                    playSuccessAnimation();
+                })
+                .addOnFailureListener(e -> {
+                    overlaySaveAnim.setVisibility(View.GONE);
+                    Toast.makeText(this, "Gagal simpan: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                });
+    }
+
+    private void setupDatePicker() {
+        final Calendar myCalendar = Calendar.getInstance();
+        DatePickerDialog.OnDateSetListener dateSetListener = (view, year, monthOfYear, dayOfMonth) -> {
+            myCalendar.set(Calendar.YEAR, year);
+            myCalendar.set(Calendar.MONTH, monthOfYear);
+            myCalendar.set(Calendar.DAY_OF_MONTH, dayOfMonth);
+            String myFormat = "yyyy-MM-dd";
+            SimpleDateFormat sdf = new SimpleDateFormat(myFormat, Locale.US);
+            etDate.setText(sdf.format(myCalendar.getTime()));
+        };
+
+        etDate.setOnClickListener(v -> {
+            new DatePickerDialog(ScanActivity.this, dateSetListener,
+                    myCalendar.get(Calendar.YEAR),
+                    myCalendar.get(Calendar.MONTH),
+                    myCalendar.get(Calendar.DAY_OF_MONTH)).show();
+        });
+    }
+
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
-
         cameraProviderFuture.addListener(() -> {
             try {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-                CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-
-                // 1. Preview (Layar)
-                Preview preview = new Preview.Builder().build();
+                Preview preview = new Preview.Builder()
+                        .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
+                        .build();
                 preview.setSurfaceProvider(viewFinder.getSurfaceProvider());
 
-                // 2. ImageCapture (Alat Foto) - INI YANG BARU
-                imageCapture = new ImageCapture.Builder().build();
+                imageCapture = new ImageCapture.Builder()
+                        .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
+                        .build();
 
+                CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
                 cameraProvider.unbindAll();
-
-                // Gabungkan Preview + ImageCapture
                 cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageCapture);
-
             } catch (ExecutionException | InterruptedException e) {
                 Log.e("ScanActivity", "Gagal start kamera", e);
             }
         }, ContextCompat.getMainExecutor(this));
     }
 
-    // Fungsi helper untuk cek izin
-    private boolean allPermissionsGranted() {
-        for (String permission : REQUIRED_PERMISSIONS) {
-            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // Menangani jawaban User (Boleh/Tolak izin)
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (allPermissionsGranted()) {
-                startCamera();
-            } else {
-                Toast.makeText(this, "Izin kamera ditolak, fitur scan tidak bisa digunakan.", Toast.LENGTH_SHORT).show();
-                finish(); // Tutup activity jika ditolak
-            }
-        }
-    }
-    @androidx.camera.core.ExperimentalGetImage
-    private void captureAndAnalyze() {
-        if (imageCapture == null) return;
-
-        // Ambil Gambar
-        imageCapture.takePicture(ContextCompat.getMainExecutor(this), new ImageCapture.OnImageCapturedCallback() {
-            @Override
-            public void onCaptureSuccess(@NonNull ImageProxy imageProxy) {
-                // Gambar berhasil ditangkap, sekarang kita baca!
-                analyzeImage(imageProxy);
-            }
-
-            @Override
-            public void onError(@NonNull ImageCaptureException exception) {
-                Toast.makeText(ScanActivity.this, "Gagal ambil foto", Toast.LENGTH_SHORT).show();
-            }
-        });
-    }
-
-    // Fungsi Analisa Teks ML Kit
-    @androidx.camera.core.ExperimentalGetImage
-    private void analyzeImage(ImageProxy imageProxy) {
-        Image mediaImage = imageProxy.getImage();
-        if (mediaImage != null) {
-            InputImage image = InputImage.fromMediaImage(mediaImage, imageProxy.getImageInfo().getRotationDegrees());
-
-            // Mulai ML Kit
+    private void analyzeSavedImage(android.net.Uri photoUri) {
+        try {
+            InputImage image = InputImage.fromFilePath(this, photoUri);
             TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
                     .process(image)
-                    .addOnSuccessListener(visionText -> {
-                        // Sukses baca teks!
-                        processTextResult(visionText);
-                        imageProxy.close(); // Wajib tutup biar gak memory leak
-                    })
-                    .addOnFailureListener(e -> {
-                        Log.e("Scan", "Gagal baca teks", e);
-                        imageProxy.close();
-                    });
-        }
+                    .addOnSuccessListener(this::processTextResult)
+                    .addOnFailureListener(e -> Toast.makeText(this, "Gagal baca teks", Toast.LENGTH_SHORT).show());
+        } catch (java.io.IOException e) { e.printStackTrace(); }
     }
-
-    // LOGIKA PINTAR (REGEX) UNTUK TANGGAL & HARGA
 
     private void processTextResult(Text text) {
         String fullText = text.getText();
 
-        // --- 1. DETEKSI MERCHANT (TOKO) ---
-        // Strategi: Ambil baris paling atas yang bukan kata umum nota.
-        String merchantName = "";
+        // 1. Detect Notes
+        String detectedNotes = "";
         outerLoop:
         for (Text.TextBlock block : text.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
                 String txt = line.getText();
                 String lowerTxt = txt.toLowerCase();
-
-                // Filter kata-kata teknis di header nota
-                if (!lowerTxt.contains("tanggal") &&
-                        !lowerTxt.contains("kepada") &&
-                        !lowerTxt.contains("nota no") &&
-                        txt.length() > 3) {
-
-                    // Cek apakah ini nomor HP/Rekening di awal (misal 0813...)
+                if (!lowerTxt.contains("tanggal") && !lowerTxt.contains("kepada") && !lowerTxt.contains("nota") && txt.length() > 3) {
                     String digitsOnly = lowerTxt.replaceAll("[^0-9]", "");
                     if (digitsOnly.length() > 9) continue;
-
-                    merchantName = txt;
-                    break outerLoop; // Ambil yang pertama valid, lalu stop.
+                    detectedNotes = txt;
+                    break outerLoop;
                 }
             }
         }
-        etStoreName.setText(merchantName);
+        etNotes.setText(detectedNotes);
 
-
-        // --- 2. DETEKSI TANGGAL (SMART DATE - HANDWRITING SUPPORT) ---
-        // Strategi: Cari pola "Angka(1-2) Pemandu(spasi/strip/titik) Bulan(Huruf) Pemandu Tahun(2-4)"
-        // Regex dibuat lebih fleksibel [\\s.-]* artinya "nol atau lebih spasi/titik/strip"
+        // 2. Detect Date
         String detectedDate = "";
-        // Pola untuk "13 Des 2025" atau "13-Des-25"
-        String datePatternIndo = "(\\d{1,2}[\\s.-]+[a-zA-Z]{3,}[\\s.-]+\\d{2,4})";
-        // Pola cadangan untuk "13/12/2025"
-        String datePatternDigit = "(\\d{1,2}[-./]\\d{1,2}[-./]\\d{2,4})";
-
-        Pattern p1 = Pattern.compile(datePatternIndo);
+        Pattern p1 = Pattern.compile("(\\d{1,2}[\\s.-]+[a-zA-Z]{3,}[\\s.-]+\\d{2,4})");
         Matcher m1 = p1.matcher(fullText);
-
-        Pattern p2 = Pattern.compile(datePatternDigit);
+        Pattern p2 = Pattern.compile("(\\d{1,2}[-./]\\d{1,2}[-./]\\d{2,4})");
         Matcher m2 = p2.matcher(fullText);
 
-        if (m1.find()) {
-            detectedDate = m1.group(1); // Prioritas format nama bulan (Des)
-        } else if (m2.find()) {
-            detectedDate = m2.group(1); // Cadangan format angka (12)
-        }
+        if (m1.find()) detectedDate = m1.group(1);
+        else if (m2.find()) detectedDate = m2.group(1);
+        if (detectedDate != null) etDate.setText(detectedDate.trim());
 
-        // Bersihkan hasil (kadang ada spasi berlebih di awal/akhir)
-        if (detectedDate != null) {
-            etDate.setText(detectedDate.trim());
-        } else {
-            etDate.setText("");
-        }
-
-
-        // --- 3. DETEKSI HARGA (TOTAL RP) - ANTI REKENING ---
-        // Masalah Utama: Nomor rekening BSI (10 digit) dianggap harga terbesar.
-        // Solusi: Filter angka > 9 digit, dan prioritaskan baris yang ada kata "TOTAL".
-
+        // 3. Detect Amount
         double priceFromKeyword = 0;
         double maxFallbackPrice = 0;
         boolean keywordFound = false;
@@ -239,51 +395,42 @@ public class ScanActivity extends AppCompatActivity {
         for (Text.TextBlock block : text.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
                 String lineText = line.getText().toLowerCase();
-                // Ambil hanya angka murni. Contoh "Rp. 160.000" -> "160000"
                 String cleanNumberStr = lineText.replaceAll("[^0-9]", "");
-
                 if (!cleanNumberStr.isEmpty()) {
-                    // FILTER PENTING: Abaikan Nomor Rekening/HP (panjang >= 10 digit)
                     if (cleanNumberStr.length() >= 10) continue;
-
                     try {
                         double currentVal = Double.parseDouble(cleanNumberStr);
-
-                        // Abaikan jika angkanya terlihat seperti tahun (misal 2025)
-                        if (currentVal == 2024 || currentVal == 2025) continue;
-
-                        // Strategi A: Prioritas Utama - Cari di baris yang ada kata "Total"/"Jumlah"
+                        if (currentVal == 2024 || currentVal == 2025 || currentVal == 2026) continue;
                         if (lineText.contains("total") || lineText.contains("jumlah")) {
-                            // Jika di baris "Total" ada beberapa angka, ambil yang terbesar di baris itu
-                            if (currentVal > priceFromKeyword) {
-                                priceFromKeyword = currentVal;
-                            }
+                            if (currentVal > priceFromKeyword) priceFromKeyword = currentVal;
                             keywordFound = true;
                         }
-
-                        // Strategi B: Cadangan - Simpan angka terbesar yang masuk akal (bukan rekening)
-                        if (currentVal > maxFallbackPrice) {
-                            maxFallbackPrice = currentVal;
-                        }
-
-                    } catch (NumberFormatException e) {
-                        // ignore
-                    }
+                        if (currentVal > maxFallbackPrice) maxFallbackPrice = currentVal;
+                    } catch (NumberFormatException e) { }
                 }
             }
         }
+        if (keywordFound && priceFromKeyword > 0) etAmount.setText(String.format("%.0f", priceFromKeyword));
+        else if (maxFallbackPrice > 0) etAmount.setText(String.format("%.0f", maxFallbackPrice));
+        else etAmount.setText("0");
+    }
 
-        // Keputusan Akhir
-        if (keywordFound && priceFromKeyword > 0) {
-            // Jika ketemu kata "Total", PASTI pakai angka itu.
-            etAmount.setText(String.format("%.0f", priceFromKeyword));
-        } else if (maxFallbackPrice > 0) {
-            // Jika tidak, pakai angka terbesar yang lolos filter.
-            etAmount.setText(String.format("%.0f", maxFallbackPrice));
-        } else {
-            etAmount.setText("0");
+    private boolean allPermissionsGranted() {
+        for (String permission : REQUIRED_PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) return false;
         }
+        return true;
+    }
 
-        Toast.makeText(this, "Scan Selesai. Cek data.", Toast.LENGTH_SHORT).show();
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_CODE_PERMISSIONS) {
+            if (allPermissionsGranted()) startCamera();
+            else {
+                Toast.makeText(this, "Izin kamera ditolak.", Toast.LENGTH_SHORT).show();
+                finish();
+            }
+        }
     }
 }
