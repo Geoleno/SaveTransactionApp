@@ -50,7 +50,7 @@ Aplikasi ini dibangun menggunakan teknologi modern Android Development:
 
 1.  **Clone Repository** ini ke komputer kamu.
     ```bash
-    git clone [https://github.com/username-kamu/SaveTransactionApp.git](https://github.com/username-kamu/SaveTransactionApp.git)
+    git clone [https://github.com/Geoleno/SaveTransactionApp.git](https://github.com/Geoleno/SaveTransactionApp.git)
     ```
 2.  Buka project di **Android Studio**.
 3.  **PENTING**: Tambahkan file `google-services.json` milikmu ke dalam folder `app/`.
@@ -62,8 +62,8 @@ Aplikasi ini dibangun menggunakan teknologi modern Android Development:
 
 ## 👨‍💻 Author
 
-**Nama Kamu** Mahasiswa Teknik Informatika - Universitas ...  
-GitHub: [@username-kamu](https://github.com/username-kamu)
+Mahasiswa Computer Science - Universitas Bina Nusantara 
+GitHub: [@Geoleno](https://github.com/Geoleno)
 
 ---
 
